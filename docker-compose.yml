@@ -1,0 +1,215 @@
+# expense-deployer/docker-compose.yml
+# Orchestrates the expense-tracker microservices
+
+services:
+  # =============================================================================
+  # Infrastructure Services
+  # =============================================================================
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: expense-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-expense_tracker}
+      POSTGRES_USER: ${DB_USERNAME:-expense_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "${DB_PORT_EXTERNAL:-5432}:5432"
+    networks:
+      - expense-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-expense_user} -d ${DB_DATABASE:-expense_tracker}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: expense-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT_EXTERNAL:-6379}:6379"
+    networks:
+      - expense-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # =============================================================================
+  # C++ gRPC Engine
+  # =============================================================================
+
+  expense-engine:
+    build:
+      context: ../expense-engine
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: expense-engine
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_DATABASE:-expense_tracker}
+      DB_USER: ${DB_USERNAME:-expense_user}
+      DB_PASSWORD: ${DB_PASSWORD}
+      GRPC_PORT: 50051
+      METRICS_PORT: 9090
+      LOG_LEVEL: ${ENGINE_LOG_LEVEL:-info}
+      ENABLE_GRPC_REFLECTION: ${ENABLE_GRPC_REFLECTION:-false}
+    volumes:
+      - engine_data:/data
+    ports:
+      - "${GRPC_PORT_EXTERNAL:-50051}:50051"
+      - "${ENGINE_METRICS_PORT:-9090}:9090"
+    networks:
+      - expense-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/localhost/50051' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # =============================================================================
+  # PHP Laravel Application
+  # =============================================================================
+
+  php:
+    build:
+      context: ../expense-api
+      dockerfile: docker/php/Dockerfile
+    container_name: expense-php
+    restart: unless-stopped
+    environment:
+      APP_NAME: ${APP_NAME:-ExpenseTracker}
+      APP_ENV: ${APP_ENV:-production}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      APP_KEY: ${APP_KEY}
+      APP_URL: ${APP_URL:-http://localhost:8000}
+      LOG_CHANNEL: ${LOG_CHANNEL:-stack}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${DB_DATABASE:-expense_tracker}
+      DB_USERNAME: ${DB_USERNAME:-expense_user}
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-null}
+      CACHE_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      SESSION_DRIVER: redis
+      GRPC_ENGINE_HOST: expense-engine
+      GRPC_ENGINE_PORT: 50051
+      GRPC_TIMEOUT: ${GRPC_TIMEOUT:-30}
+      GRPC_RETRY_ATTEMPTS: ${GRPC_RETRY_ATTEMPTS:-3}
+      SUPPORTED_CURRENCIES: ${SUPPORTED_CURRENCIES:-USD,EUR,GBP,JPY,CNY,CAD,AUD,CHF,SGD,HKD,VND}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      RATE_LIMIT_IMPORT_PER_HOUR: ${RATE_LIMIT_IMPORT_PER_HOUR:-10}
+    volumes:
+      - php_storage:/var/www/html/storage
+    networks:
+      - expense-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      expense-engine:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:alpine
+    container_name: expense-nginx
+    restart: unless-stopped
+    volumes:
+      - ../expense-api:/var/www/html:ro
+      - ../expense-api/docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${API_PORT:-8000}:80"
+    networks:
+      - expense-network
+    depends_on:
+      - php
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "${APP_URL:-http://localhost:8000}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # =============================================================================
+  # Queue Worker
+  # =============================================================================
+
+  queue-worker:
+    build:
+      context: ../expense-api
+      dockerfile: docker/php/Dockerfile
+    container_name: expense-queue
+    restart: unless-stopped
+    command: php artisan queue:work redis --tries=3 --timeout=300 --sleep=3 --max-jobs=1000
+    environment:
+      APP_NAME: ${APP_NAME:-ExpenseTracker}
+      APP_ENV: ${APP_ENV:-production}
+      APP_KEY: ${APP_KEY}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${DB_DATABASE:-expense_tracker}
+      DB_USERNAME: ${DB_USERNAME:-expense_user}
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      QUEUE_CONNECTION: redis
+      GRPC_ENGINE_HOST: expense-engine
+      GRPC_ENGINE_PORT: 50051
+      GRPC_TIMEOUT: ${GRPC_TIMEOUT:-30}
+      GRPC_RETRY_ATTEMPTS: ${GRPC_RETRY_ATTEMPTS:-3}
+    volumes:
+      - php_storage:/var/www/html/storage
+    networks:
+      - expense-network
+    depends_on:
+      - php
+
+# =============================================================================
+# Networks
+# =============================================================================
+
+networks:
+  expense-network:
+    driver: bridge
+    name: expense-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+
+volumes:
+  postgres_data:
+    name: expense-postgres-data
+  redis_data:
+    name: expense-redis-data
+  php_storage:
+    name: expense-php-storage
+  engine_data:
+    name: expense-engine-data
