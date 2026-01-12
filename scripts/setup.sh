@@ -80,16 +80,15 @@ if [ "${DB_PASSWORD:-your_secure_password_here}" = "your_secure_password_here" ]
     exit 1
 fi
 
-# Create Docker network if needed
+# Clean up any existing network with wrong labels
 echo ""
-echo "[4/7] Creating Docker network..."
+echo "[4/7] Preparing Docker network..."
 
-if ! docker network inspect expense-network &> /dev/null 2>&1; then
-    docker network create expense-network
-    echo "  - Created expense-network"
-else
-    echo "  - expense-network already exists"
+if docker network inspect expense-network &> /dev/null 2>&1; then
+    echo "  - Removing existing expense-network (will be recreated by Docker Compose)"
+    docker network rm expense-network 2>/dev/null || true
 fi
+echo "  - Network will be created by Docker Compose"
 
 # Build images
 echo ""

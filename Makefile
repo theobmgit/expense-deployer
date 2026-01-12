@@ -57,9 +57,10 @@ build: ## Build all Docker images
 rebuild: ## Force rebuild all images (no cache)
 	docker compose build --no-cache --parallel
 
-clean: down ## Stop services and remove volumes (WARNING: deletes data!)
+clean: ## Stop services, remove volumes and networks (WARNING: deletes data!)
 	docker compose down -v --remove-orphans
-	@echo "$(RED)All data volumes removed!$(NC)"
+	@docker network rm expense-network 2>/dev/null || true
+	@echo "$(RED)All data volumes and networks removed!$(NC)"
 
 # =============================================================================
 # Logs & Monitoring
