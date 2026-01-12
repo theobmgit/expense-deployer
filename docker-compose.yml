@@ -70,6 +70,7 @@ services:
       ENABLE_GRPC_REFLECTION: ${ENABLE_GRPC_REFLECTION:-false}
     volumes:
       - engine_data:/data
+      - shared_imports:/home/expense/imports:ro
     ports:
       - "${GRPC_PORT_EXTERNAL:-50051}:50051"
       - "${ENGINE_METRICS_PORT:-9090}:9090"
@@ -126,6 +127,7 @@ services:
       RATE_LIMIT_IMPORT_PER_HOUR: ${RATE_LIMIT_IMPORT_PER_HOUR:-10}
     volumes:
       - php_storage:/var/www/html/storage
+      - shared_imports:/var/www/html/storage/app/imports
     networks:
       - expense-network
     depends_on:
@@ -186,6 +188,7 @@ services:
       GRPC_RETRY_ATTEMPTS: ${GRPC_RETRY_ATTEMPTS:-3}
     volumes:
       - php_storage:/var/www/html/storage
+      - shared_imports:/var/www/html/storage/app/imports
     networks:
       - expense-network
     depends_on:
@@ -213,3 +216,5 @@ volumes:
     name: expense-php-storage
   engine_data:
     name: expense-engine-data
+  shared_imports:
+    name: expense-shared-imports
